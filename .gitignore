@@ -1,4 +1,4 @@
 *.bmp
-palette1
-palette2
+*.asm
+*.sif
 __pycache__/

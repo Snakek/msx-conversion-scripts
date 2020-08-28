@@ -16,7 +16,7 @@ def parse_input():
     parser.add_argument("-p", help="specify palette file", dest="palette")
     parser.add_argument("-o", help="specify output file", dest="output")
     parser.add_argument("bmp_file")
-    parser.add_argument("output_type", choices=["screen2", "screen5"])
+    parser.add_argument("output_type", choices=["screen2", "screen5", "hwsprite"])
     parser.add_argument("format", choices=["asm", "sif"])
     argv = parser.parse_args()
 
@@ -76,6 +76,11 @@ def read_bmp():
         print("Tile needs to be 8x8")
         exit(0)
 
+    #checking for invalid sprite size
+    if argv.output_type == "hwsprite" and (width != height or (width != 8 and width != 16)):
+        print("Sprite needs to be 8x8 or 16x16")
+        exit(1)
+
     #reading rgb data
     bmp.seek(start)
     data = []
@@ -121,7 +126,8 @@ def write(data):
 def write_asm(data):
     switchcase = {
         "screen2" : write_asm_screen2,
-        "screen5" : write_asm_screen5
+        "screen5" : write_asm_screen5,
+        "hwsprite" : write_asm_hwsprite
     }
     write_asm_type = switchcase.get(argv.output_type)
     write_asm_type(data)
@@ -129,7 +135,8 @@ def write_asm(data):
 def write_sif(data):
     switchcase = {
         "screen2" : write_sif_screen2,
-        "screen5" : write_sif_screen5
+        "screen5" : write_sif_screen5,
+        "hwsprite" : write_asm_hwsprite
     }
     write_sif_type = switchcase.get(argv.output_type)
     write_sif_type(data)
@@ -203,6 +210,50 @@ def write_asm_screen5(data):
     asm.close()
     return
 
+def write_asm_hwsprite(data):
+    filename = os.path.splitext(argv.bmp_file)[0]
+
+    #labelling
+    pattern = filename + ":\n        db "
+    color = filename + "_color:\n        db "
+
+    colorvalue = []
+
+    for i in range(0,width * height // 64):
+        for j in range(0,8):
+            line_pattern = 0
+            for k in range(0,8):
+                pixel = data[k + j * width + (i % 2) * 128 + (i // 2) * 8]
+                if pixel != 0:
+                    if len(colorvalue) == 0:
+                        colorvalue.append(pixel)
+                    elif colorvalue[0] != pixel:
+                        print("Sprites must have only one color")
+                        exit(4)
+                    line_pattern |= 1
+                if k != 7:
+                    line_pattern <<= 1
+            pattern += "0x{0:0{1}X}".format(line_pattern, 2)
+            if j != 7:
+                pattern += ','
+        if i != width * height / 64 - 1:
+            pattern += "\n        db "
+
+    if argv.output != None:
+        asm = open(argv.output, "w")
+    else:
+        asm = open(filename + ".asm", "w")
+
+    asm.write(pattern + '\n')
+    if len(colorvalue) == 0:
+        print("Warning: empty sprite")
+    else:
+        color += "0x{0:0{1}X}".format(colorvalue[0], 2)
+        asm.write(color)
+    asm.close()
+
+    return
+
 def write_sif_screen2(data):
     return
 
@@ -229,4 +280,7 @@ def write_sif_screen5(data):
         sif.write((dot2 | (dot1 << 4)).to_bytes(1, "little"))
 
     sif.close()
+    return
+
+def write_sif_hwsprites(data):
     return
