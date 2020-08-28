@@ -1,0 +1,4 @@
+*.bmp
+palette1
+palette2
+__pycache__/
