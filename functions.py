@@ -11,12 +11,14 @@ def parse_input():
     global argv
     parser = argparse.ArgumentParser(formatter_class=argparse.RawDescriptionHelpFormatter,
                                      description="Converts a bmp into assembly code or a SIF file.",
-                                     epilog="Palette file must only define the conversion table, as such:\n\nRGB 0\nRGB 1\n...\nRGB 16\n")
-    parser.add_argument("-i", action="store_true", help="process palette data and include it in output")
+                                     epilog="Palette file must only define the conversion table, as such:\
+                                     \n\nFor screen 0:\nRGB 1\n\nFor screen 1:\nRGB 0\nRGB 1\n\nFor graphic modes:\nRGB 0\nRGB 1\n...\nRGB 16\n")
+    parser.add_argument("-ip", action="store_true", help="process palette data and include it in output")
     parser.add_argument("-p", help="specify palette file", dest="palette")
     parser.add_argument("-o", help="specify output file", dest="output")
     parser.add_argument("bmp_file")
-    parser.add_argument("output_type", choices=["screen2", "screen5", "hwsprite"])
+    parser.add_argument("output_type", choices=["screen0", "screen1", "screen2", "screen3", "screen4", "screen5",\
+                                                    "screen6", "screen7", "screen8", "sprite1", "sprite2"])
     parser.add_argument("format", choices=["asm", "sif"])
     argv = parser.parse_args()
 
@@ -31,9 +33,30 @@ def get_conversion_table():
             conversion_table.append(line.split())
         for line in conversion_table:
             line[0] = bytearray.fromhex(line[0])
+            if len(line[0]) != 3:
+                print("error: invalid RGB value in palette")
+                exit(0)
             line[1] = int(line[1])
+            if line[1] > 15 or line[1] < 0\
+                or (argv.output_type == "screen0" and line[1] != 1)\
+                or (argv.output_type == "screen1" and (line[1] != 0 and line[1] != 1)):
+                print("error: invalid color value in palette")
+                exit(1)
 
-    #default palette
+    #default palette for screen 0
+    elif argv.output_type == "screen0":
+        conversion_table = [
+            (b'\xFF\xFF\xFF', 1)       #TEXT COLOR
+        ]
+
+    #default palette for screen 1
+    elif argv.output_type == "screen1":
+        conversion_table = [
+            (b'\x24\x24\xFF', 0),      #TEXT COLOR 0
+            (b'\xFF\xFF\xFF', 1)       #TEXT COLOR 1
+        ]
+
+    #default palette for graphic modes
     else:
         conversion_table = [
             (b'\x00\x00\x00', 0),      #TRANSPARENT
@@ -72,14 +95,20 @@ def read_bmp():
     height = int.from_bytes(height, "little")
 
     #checking for invalid tile size
+    if argv.output_type == "screen0" and (width != 6 or height != 8):
+        print("Screen 0 tile needs to be 6x8")
+        exit(2)
+    if argv.output_type == "screen1" and (width != height or width != 8):
+        print("Screen 1 tile needs to be 8x8")
+        exit(2)
     if argv.output_type == "screen2" and (width != height or width != 8):
-        print("Tile needs to be 8x8")
-        exit(0)
+        print("Screen 2 tile needs to be 8x8")
+        exit(2)
 
     #checking for invalid sprite size
     if argv.output_type == "hwsprite" and (width != height or (width != 8 and width != 16)):
         print("Sprite needs to be 8x8 or 16x16")
-        exit(1)
+        exit(2)
 
     #reading rgb data
     bmp.seek(start)
@@ -104,44 +133,89 @@ def convert(conversion_table, bmp_data):
             pixel = b"".join([bmp_data[i * 3 + (i // width) * padding + 2],
                               bmp_data[i * 3 + (i // width) * padding + 1],
                               bmp_data[i * 3 + (i // width) * padding]])
-        for j in range(0, 16):
+        for j in range(0, len(conversion_table)):
             if pixel == conversion_table[j][0]:
                 pixel = conversion_table[j][1]
-        if type(pixel) is bytes:
-            print("error: color from outside of palette found: " + str(pixel))
-            exit(2)
+        if type(pixel) is bytes :
+            #screen 0: background
+            if argv.output_type == "screen0":
+                pixel = 0
+            #other screens: error
+            else:
+                print("error: color from outside of palette found: " + str(pixel))
+                exit(3)
         pixels.append(pixel)
 
     return pixels
 
 def write(data):
     switchcase = {
-        "asm" : write_asm,
-        "sif" : write_sif
+        "screen0" : write_screen0,
+        "screen1" : write_screen1,
+        "screen2" : write_screens24,
+        "screen3" : write_screen3,
+        "screen4" : write_screens24,
+        "screen5" : write_screen5,
+        "screen6" : write_screen6,
+        "screen7" : write_screen7,
+        "screen8" : write_screen8,
+        "sprite1" : write_sprite1,
+        "sprite2" : write_sprite2
     }
-    write_format = switchcase.get(argv.format)
-    write_format(data)
+    write_type = switchcase.get(argv.output_type)
+    write_type(data)
     return
 
-def write_asm(data):
-    switchcase = {
-        "screen2" : write_asm_screen2,
-        "screen5" : write_asm_screen5,
-        "hwsprite" : write_asm_hwsprite
-    }
-    write_asm_type = switchcase.get(argv.output_type)
-    write_asm_type(data)
+def write_screen0(data):
+    filename = os.path.splitext(argv.bmp_file)[0]
 
-def write_sif(data):
-    switchcase = {
-        "screen2" : write_sif_screen2,
-        "screen5" : write_sif_screen5,
-        "hwsprite" : write_asm_hwsprite
-    }
-    write_sif_type = switchcase.get(argv.output_type)
-    write_sif_type(data)
+    #labelling
+    pattern = filename + ":\n        db "
+    for i in range(0,8):
+        line_pattern = 0
+        for j in range(0,6):
+            line_pattern |= data[j + i * 6]
+            line_pattern <<= 1
+            if j == 5:
+                line_pattern <<= 1
+        pattern += "0x{0:0{1}X}".format(line_pattern, 2)
+        if i != 7:
+            pattern += ','
 
-def write_asm_screen2(data):
+    if argv.output != None:
+        asm = open(argv.output, "w")
+    else:
+        asm = open(filename + ".asm", "w")
+    asm.write(pattern)
+    asm.close()
+
+    return
+
+def write_screen1(data):
+    filename = os.path.splitext(argv.bmp_file)[0]
+
+    #labelling
+    pattern = filename + ":\n        db "
+    for i in range(0,8):
+        line_pattern = 0
+        for j in range(0,8):
+            line_pattern |= data[j + i * 8]
+            if j != 7:
+                line_pattern <<= 1
+        pattern += "0x{0:0{1}X}".format(line_pattern, 2)
+        if i != 7:
+            pattern += ','
+
+    if argv.output != None:
+        asm = open(argv.output, "w")
+    else:
+        asm = open(filename + ".asm", "w")
+    asm.write(pattern)
+    asm.close()
+
+    return
+
+def write_screens24(data):
     filename = os.path.splitext(argv.bmp_file)[0]
 
     #labelling
@@ -155,7 +229,7 @@ def write_asm_screen2(data):
             if line_colors.count(pixel) == 0:
                 if len(line_colors) == 2:
                     print("Tiles must have only two colors per line.")
-                    exit(3)
+                    exit(4)
                 line_colors.append(pixel)
             if len(line_colors) == 2 and pixel == line_colors[1]:
                 line_pattern |= 1
@@ -178,7 +252,33 @@ def write_asm_screen2(data):
 
     return
 
-def write_asm_screen5(data):
+def write_screen3(data):
+    filename = os.path.splitext(argv.bmp_file)[0]
+
+    #labelling
+    pattern = filename + ":\n        db "
+    for i in range(0,height//8):
+        for j in range(0,width//8):
+            top_colors = (data[j * 8 + i * 8 * width] << 4) | data[j * 8 + i * 8 * width + 4]
+            bottom_colors = (data[j * 8 + i * 8 * width + 4 * width] << 4) | data[j * 8 + i * 8 * width + 4 * (width + 1)]
+            pattern += "0x{0:0{1}X}".format(top_colors, 2)
+            pattern += ','
+            pattern += "0x{0:0{1}X}".format(bottom_colors, 2)
+            if j != (width//8 - 1):
+                pattern += ','
+            elif i != (height//8 - 1):
+                pattern += "\n        db "
+
+    if argv.output != None:
+        asm = open(argv.output, "w")
+    else:
+        asm = open(filename + ".asm", "w")
+    asm.write(pattern)
+    asm.close()
+
+    return
+
+def write_screen5(data):
     filename = os.path.splitext(argv.bmp_file)[0]
     if argv.output != None:
         asm = open(argv.output, "w")
@@ -210,7 +310,16 @@ def write_asm_screen5(data):
     asm.close()
     return
 
-def write_asm_hwsprite(data):
+def write_screen6(data):
+    return
+
+def write_screen7(data):
+    return
+
+def write_screen8(data):
+    return
+
+def write_sprite1(data):
     filename = os.path.splitext(argv.bmp_file)[0]
 
     #labelling
@@ -229,7 +338,7 @@ def write_asm_hwsprite(data):
                         colorvalue.append(pixel)
                     elif colorvalue[0] != pixel:
                         print("Sprites must have only one color")
-                        exit(4)
+                        exit(5)
                     line_pattern |= 1
                 if k != 7:
                     line_pattern <<= 1
@@ -246,7 +355,7 @@ def write_asm_hwsprite(data):
 
     asm.write(pattern + '\n')
     if len(colorvalue) == 0:
-        print("Warning: empty sprite")
+        print("warning: empty sprite")
     else:
         color += "0x{0:0{1}X}".format(colorvalue[0], 2)
         asm.write(color)
@@ -254,10 +363,56 @@ def write_asm_hwsprite(data):
 
     return
 
-def write_sif_screen2(data):
+def write_sprite2(data):
+    filename = os.path.splitext(argv.bmp_file)[0]
+
+    #labelling
+    pattern = filename + ":\n        db "
+    color = filename + "_colors:\n        db "
+
+    for i in range(0,width * height // 64):
+        for j in range(0,8):
+            line_pattern = 0
+            colorvalue = []
+            for k in range(0,8):
+                pixel = data[k + j * width + (i % 2) * 128 + (i // 2) * 8]
+                if pixel != 0:
+                    if len(colorvalue) == 0:
+                        colorvalue.append(pixel)
+                    elif colorvalue[0] != pixel:
+                        print("Sprites must have only one color per line")
+                        exit(6)
+                    line_pattern |= 1
+                if k != 7:
+                    line_pattern <<= 1
+            pattern += "0x{0:0{1}X}".format(line_pattern, 2)
+            if len(colorvalue) == 0:
+                color += "0x00"
+            else:
+                color += "0x{0:0{1}X}".format(colorvalue[0], 2)
+            if j != 7:
+                pattern += ','
+                color += ','
+        if i != width * height / 64 - 1:
+            pattern += "\n        db "
+            color += "\n        db "
+    if (width * height // 64) != 1:
+        color_lines = color.splitlines()
+        if color_lines[1] != color_lines[3] or color_lines[2] != color_lines[4]:
+            print("Sprites must have only one color per line")
+        color = color_lines[0] + '\n' + color_lines[1] + '\n' + color_lines[2]
+    if argv.output != None:
+        asm = open(argv.output, "w")
+    else:
+        asm = open(filename + ".asm", "w")
+
+    asm.write(pattern + '\n')
+    asm.write(color)
+    asm.close()
+
     return
 
-def write_sif_screen5(data):
+def write_sif(data):
     filename = os.path.splitext(argv.bmp_file)[0]
     if argv.output != None:
         sif = open(argv.output, "wb")
@@ -280,7 +435,4 @@ def write_sif_screen5(data):
         sif.write((dot2 | (dot1 << 4)).to_bytes(1, "little"))
 
     sif.close()
-    return
-
-def write_sif_hwsprites(data):
     return
