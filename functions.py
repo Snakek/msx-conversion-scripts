@@ -39,7 +39,8 @@ def get_conversion_table():
             line[1] = int(line[1])
             if line[1] > 15 or line[1] < 0\
                 or (argv.output_type == "screen0" and line[1] != 1)\
-                or (argv.output_type == "screen1" and (line[1] != 0 and line[1] != 1)):
+                or (argv.output_type == "screen1" and (line[1] != 0 and line[1] != 1))\
+                or (argv.output_type == "screen6" and (line[1] > 4)):
                 print("error: invalid color value in palette")
                 exit(1)
 
@@ -54,6 +55,15 @@ def get_conversion_table():
         conversion_table = [
             (b'\x24\x24\xFF', 0),      #TEXT COLOR 0
             (b'\xFF\xFF\xFF', 1)       #TEXT COLOR 1
+        ]
+
+    #default palette for screen 6
+    elif argv.output_type == "screen6":
+        conversion_table = [
+            (b'\x00\x00\x00', 0),      #TRANSPARENT
+            (b'\x01\x01\x01', 1),      #BLACK
+            (b'\x24\xDB\x24', 2),      #MEDIUM_GREEN
+            (b'\x6D\xFF\x6D', 3)       #LIGHT_GREEN
         ]
 
     #default palette for graphic modes
@@ -297,7 +307,7 @@ def write_screen5(data):
         #writing byte from nibbles
         dot1 = data[i]
         dot2 = 0
-        if i == 0 or (i + 1) % width != 0:
+        if (i + 1) % width != 0:
             dot2 = data[i + 1]
             i += 1
         i += 1
@@ -311,6 +321,44 @@ def write_screen5(data):
     return
 
 def write_screen6(data):
+    filename = os.path.splitext(argv.bmp_file)[0]
+    if argv.output != None:
+        asm = open(argv.output, "w")
+    else:
+        asm = open(filename + ".asm", "w")
+
+    #labelling
+    asm.write(filename + ":")
+
+    i = 0
+    while i < len(data):
+        #newline
+        if i % width == 0:
+            asm.write("\n       db ")
+
+        #writing byte from nibbles
+        dot1 = data[i]
+        dot2 = 0
+        dot3 = 0
+        dot4 = 0
+        j = 0
+        if (i + 1) % width != 0:
+            dot2 = data[i + 1]
+            j += 1
+        if (i + 1) % width != 0 and (i + 2) % width != 0:
+            dot3 = data[i + 2]
+            j += 1
+        if (i + 1) % width != 0 and (i + 2) % width != 0 and (i + 3) % width != 0:
+            dot4 = data[i + 3]
+            j += 1
+        i += 1 + j
+        asm.write("0x{0:0{1}X}".format((dot4 | (dot3 << 2) | (dot2 << 4) | (dot1 << 6)), 2))
+
+        #comma between values
+        if i % width != 0:
+            asm.write(",")
+
+    asm.close()
     return
 
 def write_screen7(data):
